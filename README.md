@@ -14,6 +14,8 @@
 
 </div>
 
+<img width="1184" height="689" alt="Screenshot 2026-05-22 at 5 20 08 PM" src="https://github.com/user-attachments/assets/f38a7d06-2221-418b-98aa-8f0a7d974f6c" />
+
 <br>
 
 Every codebase accumulates a backlog of things everyone knows should be fixed but nobody has time to fix. The factory clears that backlog. Not by generating slop. It actually reads the code, understands the conventions, runs the tests, and produces diffs a senior engineer would be proud to review.
