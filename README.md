@@ -1,19 +1,16 @@
 <div align="center">
 
-```
-  ╔═══╗
-  ║ ⚙ ║   forge
-  ╚═╦═╝   software factory
-    ║
-  ══╩══
-```
+# forge / swe-agent-factory
 
 ### Production tells you what to build.<br>Agents build it. You just review.
 
 <br>
 
 [![Go 1.22](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)](go.mod)&nbsp;
-[![S1 live](https://img.shields.io/badge/S1-live-brightgreen)](#where-things-stand)
+[![S1 live](https://img.shields.io/badge/status-S1%20live-brightgreen)](#where-things-stand)&nbsp;
+[![Axiom](https://img.shields.io/badge/signals-Axiom-6366f1?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsIDEwIDUgMTAtNW0tMTAtNWwxMCA1IDEwLTUiLz48L3N2Zz4=)](#the-loop)&nbsp;
+[![pi powered](https://img.shields.io/badge/agent-pi%20powered-0f172a)](#how-it-works)&nbsp;
+[![PRs by agents](https://img.shields.io/badge/PRs-by%20agents-9ece6a)](#live-proof)
 
 </div>
 
