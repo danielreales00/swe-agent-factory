@@ -1,0 +1,5 @@
+swe-agent
+/state/
+.env
+.env.local
+*.test
