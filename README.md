@@ -2,6 +2,14 @@
 
 > **Production tells you what to build. Agents build it. You just review.**
 
+Every codebase accumulates a backlog of things everyone knows should be fixed but nobody has time to fix. The factory clears that backlog. Not by generating slop — by actually reading the code, understanding the conventions, running the tests, and producing diffs a senior engineer would be proud to review.
+
+One target repo today. The architecture is already multi-target. The signal sources are already pluggable. The agent runs in any codebase that has a `.swe-agent.yml`.
+
+You stop being an engineer on your own projects. You become the engineering manager.
+
+---
+
 A software factory where AI agents are the engineering workforce. A gap appears in your production logs. A ticket lands in your issue tracker. A user complains on Slack. The factory turns that signal into a pull request — reading your codebase, following your conventions, running your quality gates — and puts it in your review queue. You approve or reject. That's your entire job.
 
 This isn't a code-autocomplete tool. It's an autonomous engineering loop.
@@ -386,12 +394,3 @@ go run ./cmd/spike \
   --prompt "Add the :rename-account action following the pattern in agent_actions.clj"
 ```
 
----
-
-## The premise
-
-Every codebase accumulates a backlog of things everyone knows should be fixed but nobody has time to fix. The factory clears that backlog. Not by generating slop — by actually reading the code, understanding the conventions, running the tests, and producing diffs a senior engineer would be proud to review.
-
-One target repo today. The architecture is already multi-target. The signal sources are already pluggable. The agent runs in any codebase that has a `.swe-agent.yml`. 
-
-You stop being an engineer on your own projects. You become the engineering manager.
