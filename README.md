@@ -1,17 +1,19 @@
 <div align="center">
 
-# 🏭 swe-agent-factory
+```
+  ╔═══╗
+  ║ ⚙ ║   forge
+  ╚═╦═╝   software factory
+    ║
+  ══╩══
+```
 
-<p>
-  <strong>Production tells you what to build.</strong><br>
-  Agents build it. You just review.
-</p>
+### Production tells you what to build.<br>Agents build it. You just review.
 
 <br>
 
 [![Go 1.22](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)](go.mod)&nbsp;
-[![S1 live](https://img.shields.io/badge/S1-live-brightgreen)](#where-things-stand)&nbsp;
-[![target: personal_finance](https://img.shields.io/badge/target-personal__finance-blue)](https://github.com/danielreales00/personal_finance)
+[![S1 live](https://img.shields.io/badge/S1-live-brightgreen)](#where-things-stand)
 
 </div>
 
@@ -83,7 +85,7 @@ You give it a task, it handles the rest:
   [approve? y]
 
   Implementing...
-  Running bin/quality... 572 tests, 0 failures ✓
+  Running bin/quality... 572 tests, 0 failures
   Branch: swe-agent/rename-account-action
   Done. Ready for review.
 ```
@@ -99,7 +101,7 @@ You give it a task, it handles the rest:
 The factory runs as a server. A gap appears in production and instead of silently queuing it, it asks:
 
 ```
-🏭 Factory
+forge
 
 :rename-account not handled (7 affected users this week)
 Evidence: "renombra mi cuenta a nequi" x3, "cambia el nombre" x4
@@ -110,9 +112,9 @@ Evidence: "renombra mi cuenta a nequi" x3, "cambia el nombre" x4
 You tap **Yes** from your phone. The agent implements it. When it's done:
 
 ```
-✅ swe-agent/rename-account-action ready
+swe-agent/rename-account-action ready
 
-+87 lines · 572 tests · 0 failures · 49s
++87 lines  572 tests  0 failures  49s
 
   [View diff]   [Merge]   [Request changes]
 ```
@@ -123,39 +125,37 @@ You stay in the loop without being in the loop.
 
 ### The factory floor
 
-When you're managing multiple repos, every agent, every work item, every repo visible in one place:
+`cmd/demo` ships a cosmetic TUI showing what the full factory dashboard looks like. Run it with `go run ./cmd/demo` to see the factory floor in your terminal.
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  🏭  Software Factory                              3 active · 12 queued      │
-├──────────────────┬───────────────────────────────────────────────────────────┤
-│                  │                                                            │
-│   Signal feed    │   Active agents                                            │
-│   ────────────   │   ─────────────────────────────────────────────────────   │
-│                  │                                                            │
-│   🔴 gap         │   personal_finance / rename-account                       │
-│      :set-note   │   ████████████░░░░  impl · 47 tool calls · 2m 14s        │
-│      7 users     │   Reading agent_actions.clj...                            │
-│                  │   [ view session ]  [ abort ]                             │
-│   🟡 ticket      │                                                            │
-│      LIN-4821    │   my_api / fix-null-ptr                                   │
-│      medium      │   ███░░░░░░░░░░░░░  draft · 12 tool calls · 38s          │
-│                  │   Writing spec...                                          │
-│   🔵 inline      │   [ view session ]  [ abort ]                             │
-│      "add CSV    │                                                            │
-│       export"    │   Review queue                                             │
-│                  │   ─────────────────────────────────────────────────────   │
-│   [ new task ]   │   ✅ rename-account        +87 / -0   49s   [ Review ]   │
-│                  │   ✅ unify-format-money     +36 / -83  73s   [ Review ]   │
-│                  │   ✅ fix-date-parsing       +12 / -3   31s   [ Merged ✓ ] │
-│                  │                                                            │
-├──────────────────┴───────────────────────────────────────────────────────────┤
-│  personal_finance  572 tests ✓  last gap 2h ago  4 PRs merged this week     │
-│  my_api            214 tests ✓  last gap 14m ago  1 PR open · 0 failures    │
-└──────────────────────────────────────────────────────────────────────────────┘
+╔══════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║  ⚙  forge                                                   3 active · 12 queued · scan in 47m · S1   ║
+╠══════════════════════════╦════════════════════════════════════════════════════╦══════════════════════════╣
+║  SIGNALS                 ║  ACTIVE AGENTS                                     ║  REVIEW QUEUE            ║
+╠══════════════════════════╬════════════════════════════════════════════════════╬══════════════════════════╣
+║  ● capability gap        ║  personal_finance                                  ║  ✓ rename-account        ║
+║    :rename-account       ║  › rename-account-action                           ║    +87 lines  0 fails    ║
+║    7 users · 2d          ║  ██████████████░░░░░  impl  47 calls  2m 14s       ║    49s  [ Review ]       ║
+║                          ║  ↳ Reading agent_actions.clj                       ║                          ║
+║  ● capability gap        ║                                                    ║  ✓ unify-format-money    ║
+║    :set-budget-note      ║  my_api                                            ║    +36 / -83  73s        ║
+║    3 users · 6h          ║  › fix-null-ptr                                    ║    [ Review ]            ║
+║                          ║  ████░░░░░░░░░░░░░░  draft  12 calls  38s          ║                          ║
+║  ◑ LIN-4821              ║  ↳ Writing spec...                                 ║  ✓ fix-date-parsing      ║
+║    null dereference      ║                                                    ║    +12 / -3  31s         ║
+║    medium                ║  company_api                                       ║    Merged ✓              ║
+║                          ║  › add-csv-export                                  ║                          ║
+║  ○ "add CSV export"      ║  ██░░░░░░░░░░░░░░░░  impl   9 calls  21s           ║                          ║
+║                          ║  ↳ Scanning export patterns...                     ║                          ║
+║  [ + new task ]          ║                                                    ║                          ║
+╠══════════════════════════╩════════════════════════════════════════════════════╩══════════════════════════╣
+║  personal_finance   572 tests ✓   last gap 2h ago    4 PRs merged this week                            ║
+║  my_api             214 tests ✓   last gap 14m ago   1 PR open · 0 failures                            ║
+║  company_api         89 tests ✓   last gap 3d ago    12 PRs merged this month                          ║
+╠══════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║  ⚙ forge  ·  3 agents running  ·  12 queued  ·  next scan in 47m  ·  uptime 3h 12m                    ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 ```
-
-Click any active agent and watch it work in real time: tool calls streaming in, the moment it writes the test, the moment it calls `request_ship`. Every session is logged and replayable. Every triage decision is overridable. The factory is a suggestion engine; you control what ships.
 
 <br>
 
@@ -197,7 +197,7 @@ How a repo opts in, full `.swe-agent.yml` reference
 <td width="50%" valign="top">
 
 **[Roadmap](docs/roadmap.md)**<br>
-S1 to S6 in detail, what's built and what's next
+S1 to S6 in detail, what is built and what is next
 
 </td>
 <td width="50%" valign="top">
