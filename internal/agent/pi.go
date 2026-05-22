@@ -5,8 +5,15 @@
 // it writes commands, parses events, manages the extension UI sub-protocol,
 // and returns a structured result when the agent emits `agent_end`.
 //
-// One Pi instance drives one work item end to end. Pi sessions are not
-// reused across work items — pin them via SessionDir for audit/replay.
+// Two APIs live here:
+//
+//   - Session — long-lived, streaming, multi-turn. Caller wires OnEvent and
+//     OnUI, drives the session with SendPrompt, ends it with Close (graceful)
+//     or Cancel (forced). This is what the Telegram bridge uses.
+//
+//   - Pi.Run — one-shot wrapper. Sends one prompt, waits for the first
+//     agent_end, closes stdin, returns the accumulated RunResult. Preserved
+//     for cmd/spike and any other unattended caller.
 package agent
 
 import (
@@ -19,16 +26,17 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Pi configures how the factory invokes `pi --mode rpc` for one work item.
+// Pi configures how the factory invokes `pi --mode rpc`.
 type Pi struct {
 	BinPath    string   // pi binary, defaults to "pi" on PATH
 	Provider   string   // --provider, e.g. "anthropic"
 	Model      string   // --model, e.g. "claude-sonnet-4-5"
 	Cwd        string   // working dir for the subprocess (the target repo)
-	SessionDir string   // --session-dir; one dir per WorkItem keeps audit trail
+	SessionDir string   // --session-dir; one dir per session keeps audit trail
 	Extensions []string // absolute paths to .ts extension files (--extension repeated)
 	Tools      []string // optional allowlist (--tools); empty = pi defaults
 	System     string   // optional --append-system-prompt text
@@ -36,25 +44,107 @@ type Pi struct {
 	Thinking   string   // optional --thinking level: off|minimal|low|medium|high|xhigh
 }
 
-// RunInput is one prompt handed to pi. Phase 1 is single-turn; multi-turn
-// (steer/follow_up) is intentionally out of scope.
+// RunInput is one prompt handed to pi via the legacy Pi.Run API.
 type RunInput struct {
 	Prompt string
 }
 
-// RunResult is the structured outcome the orchestrator can act on.
+// RunResult is the structured outcome accumulated over a session's lifetime.
 type RunResult struct {
-	AssistantText string            // text of the final assistant message
-	Messages      []json.RawMessage // raw messages array from agent_end
+	AssistantText string            // text of the most-recent assistant message
+	Messages      []json.RawMessage // raw messages array from the last agent_end
 	ToolCalls     int               // count of tool_execution_end events seen
 	ToolErrors    int               // tool_execution_end with isError=true
 	StopReason    string            // last seen assistant stop reason
 	Stderr        string            // tail of pi's stderr (for diagnostics)
 }
 
-// Run spawns pi, drives one prompt to agent_end, returns the result.
-// Cancelling ctx sends an `abort` command and kills the process.
-func (p *Pi) Run(ctx context.Context, in RunInput) (*RunResult, error) {
+// Event is one parsed RPC event from pi's stdout. Streamed via Session.OnEvent.
+type Event struct {
+	Type string
+	Raw  json.RawMessage
+}
+
+// UIRequest is an extension_ui_request that needs a reply. Pi blocks waiting
+// for the response, so handlers should return quickly (or buffer the request
+// for asynchronous resolution and reply later via Session.RespondUI).
+type UIRequest struct {
+	ID     string
+	Method string
+	Raw    json.RawMessage
+}
+
+// UIResponse describes the reply for a UIRequest. The Method on the request
+// dictates which fields matter:
+//
+//   - "confirm" → Confirmed
+//   - "select"  → SelectedID (or Cancelled)
+//   - "input", "editor" → Value (or Cancelled)
+//
+// Fire-and-forget methods (notify, setStatus, setWidget, setTitle,
+// setEditorText) never reach a UIHandler; nothing is sent back for them.
+type UIResponse struct {
+	Cancelled  bool
+	Confirmed  bool
+	Value      string
+	SelectedID string
+}
+
+// UIHandler maps a UIRequest to its reply. Installed on Session.OnUI; if nil,
+// all interactive methods auto-cancel (matches the unattended default).
+type UIHandler func(UIRequest) UIResponse
+
+// DenyAllUI cancels every interactive request. Matches the original Pi.Run
+// behavior before the streaming refactor.
+func DenyAllUI(req UIRequest) UIResponse {
+	if req.Method == "confirm" {
+		return UIResponse{Confirmed: false}
+	}
+	return UIResponse{Cancelled: true}
+}
+
+// Session is a live `pi --mode rpc` subprocess.
+//
+//	sess, err := cfg.Start(ctx)
+//	sess.OnEvent = func(e Event) { … }
+//	sess.OnUI    = func(req UIRequest) UIResponse { … }
+//	sess.SendPrompt("first task")
+//	<wait for an agent_end via OnEvent, or whatever signal matches your flow>
+//	sess.SendPrompt("follow-up")
+//	sess.Close()                 // graceful: close stdin, let pi finish
+//	res, err := sess.Wait()      // blocks until subprocess exits
+type Session struct {
+	cmd   *exec.Cmd
+	enc   *jsonlEncoder
+	stdin io.WriteCloser
+	ctx   context.Context
+
+	// OnEvent and OnUI are set by the caller after Start returns. Both are
+	// invoked from the reader goroutine, so handlers should be quick or
+	// dispatch their own work asynchronously.
+	OnEvent func(Event)
+	OnUI    UIHandler
+
+	closed    atomic.Bool
+	cancelled atomic.Bool
+	pending   atomic.Int32 // outstanding prompts: increments on SendPrompt, decrements on agent_end
+	closeOne  sync.Once
+	killOne   sync.Once
+
+	stderrBuf strings.Builder
+	stderrMu  sync.Mutex
+	stderrWG  sync.WaitGroup
+
+	resMu   sync.Mutex
+	res     RunResult
+	loopErr error
+
+	done chan struct{}
+}
+
+// Start spawns pi with the configured args. The reader goroutine begins
+// immediately; the returned Session is ready for SendPrompt.
+func (p *Pi) Start(ctx context.Context) (*Session, error) {
 	bin := p.BinPath
 	if bin == "" {
 		bin = "pi"
@@ -108,197 +198,344 @@ func (p *Pi) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 		return nil, fmt.Errorf("start pi: %w", err)
 	}
 
-	// Drain stderr concurrently; keep only the tail for diagnostics.
-	var stderrBuf strings.Builder
-	var stderrMu sync.Mutex
-	var stderrWG sync.WaitGroup
-	stderrWG.Add(1)
-	go func() {
-		defer stderrWG.Done()
-		const maxBytes = 16 * 1024
-		buf := make([]byte, 4096)
-		for {
-			n, err := stderr.Read(buf)
-			if n > 0 {
-				stderrMu.Lock()
-				if stderrBuf.Len()+n > maxBytes {
-					// Drop oldest by collapsing to last maxBytes/2.
-					cur := stderrBuf.String()
-					if len(cur) > maxBytes/2 {
-						cur = cur[len(cur)-maxBytes/2:]
-					}
-					stderrBuf.Reset()
-					stderrBuf.WriteString(cur)
-				}
-				stderrBuf.Write(buf[:n])
-				stderrMu.Unlock()
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	res := &RunResult{}
-	encoder := newJSONLEncoder(stdin)
-
-	// Send the initial prompt. id is informational; we don't correlate beyond
-	// noting the matching response.
-	if err := encoder.Encode(map[string]any{
-		"id":      "wi-prompt",
-		"type":    "prompt",
-		"message": in.Prompt,
-	}); err != nil {
-		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("send prompt: %w", err)
+	sess := &Session{
+		cmd:   cmd,
+		enc:   newJSONLEncoder(stdin),
+		stdin: stdin,
+		ctx:   ctx,
+		done:  make(chan struct{}),
 	}
 
-	// Read events until agent_end, process exit, or ctx cancel.
+	sess.stderrWG.Add(1)
+	go sess.drainStderr(stderr)
+
 	reader := bufio.NewReaderSize(stdout, 64*1024)
-	loopErr := readEventLoop(ctx, reader, encoder, res)
+	go sess.runReader(reader)
 
-	// Close stdin to let pi exit cleanly; then wait with a short grace period.
-	_ = stdin.Close()
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- cmd.Wait() }()
-
-	select {
-	case <-waitDone:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-		<-waitDone
-	}
-	stderrWG.Wait()
-
-	stderrMu.Lock()
-	res.Stderr = strings.TrimSpace(stderrBuf.String())
-	stderrMu.Unlock()
-
-	if loopErr != nil && !errors.Is(loopErr, errAgentEnd) {
-		return res, loopErr
-	}
-	return res, nil
+	return sess, nil
 }
 
-var errAgentEnd = errors.New("agent_end reached")
+// SendPrompt forwards a prompt to pi's stdin. Safe to call mid-session for
+// multi-turn flows. Returns an error if Close or Cancel has been called.
+func (s *Session) SendPrompt(message string) error {
+	if s.closed.Load() {
+		return errSessionClosed
+	}
+	s.pending.Add(1)
+	err := s.enc.Encode(map[string]any{
+		"id":      "wi-prompt-" + time.Now().UTC().Format("150405.000000000"),
+		"type":    "prompt",
+		"message": message,
+	})
+	if err != nil {
+		s.pending.Add(-1)
+	}
+	return err
+}
 
-func readEventLoop(ctx context.Context, r *bufio.Reader, enc *jsonlEncoder, res *RunResult) error {
-	for {
+// RespondUI replies to a previously-received UIRequest. Useful when OnUI
+// can't decide synchronously (e.g. the Telegram bridge waiting for a button
+// tap). The OnUI handler should return UIResponse{}-zero and call
+// RespondUI later from a different goroutine.
+//
+// Note: if OnUI returns a non-zero response synchronously, the response is
+// sent automatically and RespondUI is not needed.
+func (s *Session) RespondUI(req UIRequest, resp UIResponse) error {
+	if s.closed.Load() {
+		return errSessionClosed
+	}
+	return s.enc.Encode(buildUIReply(req.Method, req.ID, resp))
+}
+
+// Close shuts stdin so pi exits cleanly when it finishes. Idempotent.
+func (s *Session) Close() error {
+	var err error
+	s.closeOne.Do(func() {
+		s.closed.Store(true)
+		err = s.stdin.Close()
+	})
+	return err
+}
+
+// Cancel sends abort + kills the subprocess. Use for forced termination.
+func (s *Session) Cancel() {
+	s.killOne.Do(func() {
+		_ = s.enc.Encode(map[string]any{"type": "abort"})
+		s.cancelled.Store(true)
+		s.closed.Store(true)
+		_ = s.stdin.Close()
+		_ = s.cmd.Process.Kill()
+	})
+}
+
+// Done is closed when the subprocess has exited.
+func (s *Session) Done() <-chan struct{} { return s.done }
+
+// Wait blocks until the subprocess has exited and returns the accumulated
+// result. Idempotent. If neither Close nor Cancel has been called, Wait
+// closes stdin first so pi exits cleanly.
+func (s *Session) Wait() (*RunResult, error) {
+	_ = s.Close()
+	<-s.done
+	s.resMu.Lock()
+	defer s.resMu.Unlock()
+	s.stderrMu.Lock()
+	s.res.Stderr = strings.TrimSpace(s.stderrBuf.String())
+	s.stderrMu.Unlock()
+	if s.loopErr != nil {
+		return &s.res, s.loopErr
+	}
+	return &s.res, nil
+}
+
+func (s *Session) runReader(r *bufio.Reader) {
+	defer func() {
+		waitDone := make(chan error, 1)
+		go func() { waitDone <- s.cmd.Wait() }()
 		select {
-		case <-ctx.Done():
-			_ = enc.Encode(map[string]any{"type": "abort"})
-			return ctx.Err()
-		default:
+		case <-waitDone:
+		case <-time.After(5 * time.Second):
+			_ = s.cmd.Process.Kill()
+			<-waitDone
 		}
+		s.stderrWG.Wait()
+		close(s.done)
+	}()
 
+	for {
 		line, err := readJSONLLine(r)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return io.ErrUnexpectedEOF
+				if ctxErr := s.ctx.Err(); ctxErr != nil {
+					s.setLoopErr(ctxErr)
+					return
+				}
+				if s.cancelled.Load() {
+					return
+				}
+				if s.pending.Load() > 0 {
+					s.setLoopErr(io.ErrUnexpectedEOF)
+					return
+				}
+				return
 			}
-			return fmt.Errorf("read event: %w", err)
+			s.setLoopErr(fmt.Errorf("read event: %w", err))
+			return
 		}
 		if len(line) == 0 {
 			continue
 		}
 
-		// Peek the type without unmarshalling the whole payload twice.
 		var head struct {
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(line, &head); err != nil {
-			return fmt.Errorf("decode event head: %w (raw=%q)", err, truncate(line, 200))
+			s.setLoopErr(fmt.Errorf("decode event head: %w (raw=%q)", err, truncate(line, 200)))
+			return
 		}
 
-		switch head.Type {
-		case "response":
-			// We could correlate by id; for Phase 1 we just log non-success.
-			var resp struct {
-				Command string          `json:"command"`
-				Success bool            `json:"success"`
-				Err     string          `json:"error"`
-				Data    json.RawMessage `json:"data"`
-			}
-			_ = json.Unmarshal(line, &resp)
-			if !resp.Success {
-				return fmt.Errorf("rpc command %q failed: %s", resp.Command, resp.Err)
-			}
-
-		case "tool_execution_end":
-			var tee struct {
-				IsError bool `json:"isError"`
-			}
-			_ = json.Unmarshal(line, &tee)
-			res.ToolCalls++
-			if tee.IsError {
-				res.ToolErrors++
-			}
-
-		case "message_end":
-			var me struct {
-				Message struct {
-					Role       string `json:"role"`
-					StopReason string `json:"stopReason"`
-					Content    any    `json:"content"`
-				} `json:"message"`
-			}
-			if err := json.Unmarshal(line, &me); err == nil && me.Message.Role == "assistant" {
-				res.StopReason = me.Message.StopReason
-				if txt := extractAssistantText(me.Message.Content); txt != "" {
-					res.AssistantText = txt
-				}
-			}
-
-		case "agent_end":
-			var ae struct {
-				Messages []json.RawMessage `json:"messages"`
-			}
-			_ = json.Unmarshal(line, &ae)
-			res.Messages = ae.Messages
-			return errAgentEnd
-
-		case "extension_ui_request":
-			if err := handleExtensionUI(line, enc); err != nil {
-				return err
-			}
-
-		case "extension_error":
-			// Surface but don't abort; pi keeps running.
-			// Caller can read res.Stderr for the upstream message too.
-			// (No-op for now; future: aggregate into res.ExtensionErrors.)
+		if s.dispatch(head.Type, line) {
+			return // fatal — loopErr already set
 		}
 	}
 }
 
-// handleExtensionUI replies to dialog requests (select/confirm/input/editor)
-// with a conservative default and silently accepts fire-and-forget ones.
-// The factory runs unattended, so we never auto-allow risky prompts.
-func handleExtensionUI(line []byte, enc *jsonlEncoder) error {
+// dispatch processes one event. Returns true if the loop should exit.
+func (s *Session) dispatch(t string, raw []byte) bool {
+	s.resMu.Lock()
+	switch t {
+	case "response":
+		var resp struct {
+			Command string `json:"command"`
+			Success bool   `json:"success"`
+			Err     string `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &resp)
+		if !resp.Success {
+			s.loopErr = fmt.Errorf("rpc command %q failed: %s", resp.Command, resp.Err)
+			s.resMu.Unlock()
+			return true
+		}
+	case "tool_execution_end":
+		var tee struct {
+			IsError bool `json:"isError"`
+		}
+		_ = json.Unmarshal(raw, &tee)
+		s.res.ToolCalls++
+		if tee.IsError {
+			s.res.ToolErrors++
+		}
+	case "message_end":
+		var me struct {
+			Message struct {
+				Role       string `json:"role"`
+				StopReason string `json:"stopReason"`
+				Content    any    `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(raw, &me); err == nil && me.Message.Role == "assistant" {
+			s.res.StopReason = me.Message.StopReason
+			if txt := extractAssistantText(me.Message.Content); txt != "" {
+				s.res.AssistantText = txt
+			}
+		}
+	case "agent_end":
+		var ae struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		_ = json.Unmarshal(raw, &ae)
+		s.res.Messages = ae.Messages
+		s.pending.Add(-1)
+	}
+	s.resMu.Unlock()
+
+	if s.OnEvent != nil {
+		// Copy the slice so callers can hold it past this dispatch.
+		dup := append([]byte(nil), raw...)
+		s.OnEvent(Event{Type: t, Raw: dup})
+	}
+
+	if t == "extension_ui_request" {
+		s.handleUIRequest(raw)
+	}
+	return false
+}
+
+func (s *Session) handleUIRequest(raw []byte) {
 	var req struct {
 		ID     string `json:"id"`
 		Method string `json:"method"`
 	}
-	if err := json.Unmarshal(line, &req); err != nil {
-		return fmt.Errorf("decode extension_ui_request: %w", err)
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return
 	}
+
 	switch req.Method {
-	case "select", "input", "editor":
-		return enc.Encode(map[string]any{
-			"type": "extension_ui_response", "id": req.ID, "cancelled": true,
-		})
+	case "notify", "setStatus", "setWidget", "setTitle", "setEditorText", "set_editor_text":
+		return
+	}
+
+	handler := s.OnUI
+	if handler == nil {
+		handler = DenyAllUI
+	}
+	resp := handler(UIRequest{ID: req.ID, Method: req.Method, Raw: append([]byte(nil), raw...)})
+
+	// Zero-valued response means the handler will reply asynchronously via
+	// Session.RespondUI. Distinguish that from a deliberate "deny" by
+	// treating *only* an all-zero struct as deferred. Callers that want to
+	// synchronously deny should return UIResponse{Cancelled: true}.
+	if (resp == UIResponse{}) {
+		return
+	}
+
+	_ = s.enc.Encode(buildUIReply(req.Method, req.ID, resp))
+}
+
+func buildUIReply(method, id string, resp UIResponse) map[string]any {
+	reply := map[string]any{
+		"type": "extension_ui_response",
+		"id":   id,
+	}
+	switch method {
 	case "confirm":
-		return enc.Encode(map[string]any{
-			"type": "extension_ui_response", "id": req.ID, "confirmed": false,
-		})
+		reply["confirmed"] = resp.Confirmed
+	case "select":
+		if resp.Cancelled {
+			reply["cancelled"] = true
+		} else {
+			reply["selectedId"] = resp.SelectedID
+		}
+	case "input", "editor":
+		if resp.Cancelled {
+			reply["cancelled"] = true
+		} else {
+			reply["value"] = resp.Value
+		}
 	default:
-		// notify, setStatus, setWidget, setTitle, set_editor_text are
-		// fire-and-forget. Nothing to do.
-		return nil
+		// Unknown method — best effort acknowledgement.
+		if resp.Cancelled {
+			reply["cancelled"] = true
+		}
+	}
+	return reply
+}
+
+func (s *Session) setLoopErr(err error) {
+	s.resMu.Lock()
+	if s.loopErr == nil {
+		s.loopErr = err
+	}
+	s.resMu.Unlock()
+}
+
+func (s *Session) drainStderr(stderr io.Reader) {
+	defer s.stderrWG.Done()
+	const maxBytes = 16 * 1024
+	buf := make([]byte, 4096)
+	for {
+		n, err := stderr.Read(buf)
+		if n > 0 {
+			s.stderrMu.Lock()
+			if s.stderrBuf.Len()+n > maxBytes {
+				cur := s.stderrBuf.String()
+				if len(cur) > maxBytes/2 {
+					cur = cur[len(cur)-maxBytes/2:]
+				}
+				s.stderrBuf.Reset()
+				s.stderrBuf.WriteString(cur)
+			}
+			s.stderrBuf.Write(buf[:n])
+			s.stderrMu.Unlock()
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 
+// Run is the legacy one-shot API: send one prompt, wait for the first
+// agent_end, close stdin, return the accumulated result. Backward-compatible
+// with the pre-Session API used by cmd/spike.
+func (p *Pi) Run(ctx context.Context, in RunInput) (*RunResult, error) {
+	sess, err := p.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sess.OnUI = DenyAllUI
+
+	agentEnd := make(chan struct{}, 1)
+	sess.OnEvent = func(e Event) {
+		if e.Type == "agent_end" {
+			select {
+			case agentEnd <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	if err := sess.SendPrompt(in.Prompt); err != nil {
+		sess.Cancel()
+		_, _ = sess.Wait()
+		return nil, fmt.Errorf("send prompt: %w", err)
+	}
+
+	select {
+	case <-agentEnd:
+	case <-sess.Done():
+	case <-ctx.Done():
+		sess.Cancel()
+	}
+
+	return sess.Wait()
+}
+
+var (
+	errSessionClosed = errors.New("agent: session closed")
+)
+
 func extractAssistantText(content any) string {
-	// Content can be a string OR an array of blocks ({type:"text", text:"..."}, …).
 	switch v := content.(type) {
 	case string:
 		return v
