@@ -1,6 +1,6 @@
 <div align="center">
 
-# forge / swe-agent-factory
+# Forge (swe-agent-factory)
 
 ### Production tells you what to build.<br>Agents build it. You just review.
 
