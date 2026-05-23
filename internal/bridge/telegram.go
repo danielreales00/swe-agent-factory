@@ -18,9 +18,10 @@ type Message struct {
 	UpdateID int    // Telegram update id (for diagnostics)
 }
 
-// Handler receives one inbound message. Called from the long-poll goroutine,
-// so handlers should either return quickly or hand work off asynchronously.
-type Handler func(ctx context.Context, msg Message)
+// MessageHandler receives one inbound Telegram message. Called from the
+// long-poll goroutine, so handlers should either return quickly or hand
+// work off asynchronously.
+type MessageHandler func(ctx context.Context, msg Message)
 
 // Client is a thin Telegram bot wrapper: connects, long-polls inbound
 // updates, filters by allowlist, dispatches to a Handler, and provides
@@ -56,7 +57,7 @@ func (c *Client) Self() (string, int64) {
 // Non-allowlisted messages are logged at debug level and dropped — no
 // reply, no error surface, to avoid leaking the bot's existence to
 // uninvited users.
-func (c *Client) Run(ctx context.Context, handler Handler) error {
+func (c *Client) Run(ctx context.Context, handler MessageHandler) error {
 	upd := tg.NewUpdate(0)
 	upd.Timeout = 30 // long-poll seconds
 	updates := c.api.GetUpdatesChan(upd)
