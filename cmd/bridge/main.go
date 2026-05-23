@@ -1,8 +1,10 @@
 // bridge — Telegram-side entrypoint for the SWE-Agent Factory.
 //
-// Increment 2.3 scope: each allowlisted message spawns a fresh worktree
-// against the configured target repo, runs `ls -la` inside it, reports the
-// path + output to the chat, then cleans up. pi wiring lands in 2.4+.
+// 2.4 scope: each Telegram chat maps to a long-lived pi --mode rpc session
+// running in a fresh git worktree of the target repo. User messages become
+// pi prompts; pi assistant messages stream back to the chat. No tool
+// rendering yet (2.5), no Telegram-button approvals (2.6), no ship flow
+// (2.7), no /repo command (2.8).
 //
 // Required env (loadable from .env in cwd):
 //
@@ -10,16 +12,17 @@
 //	BRIDGE_ALLOWED_USER_IDS      comma-separated Telegram user IDs
 //	BRIDGE_TARGET_NAME           human-readable target tag
 //	BRIDGE_TARGET_REPO_PATH      absolute path to a git repo
+//	ANTHROPIC_API_KEY            pi's LLM credential
 //
 // Optional env:
 //
 //	BRIDGE_TARGET_DEFAULT_BRANCH (default "main")
 //	BRIDGE_TARGET_WORKTREE_ROOT  (default: parent dir of repo)
 //	BRIDGE_TARGET_BRANCH_PREFIX  (default "bridge/")
-//
-// Run:
-//
-//	go run ./cmd/bridge
+//	BRIDGE_PI_PROVIDER           (default "anthropic")
+//	BRIDGE_PI_MODEL              (default: provider default)
+//	BRIDGE_PI_SESSIONS_ROOT      (default ".bridge/sessions")
+//	BRIDGE_PI_THINKING           (off|minimal|low|medium|high|xhigh)
 package main
 
 import (
@@ -28,9 +31,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -40,10 +41,8 @@ import (
 )
 
 const (
-	worktreeTaskTimeout = 60 * time.Second
 	startupGCTimeout    = 30 * time.Second
 	staleWorktreeMaxAge = 24 * time.Hour
-	lsMaxLines          = 20
 )
 
 func main() {
@@ -80,18 +79,26 @@ func main() {
 	}
 	cancelGC()
 
+	piCfg := bridge.PiConfigFromEnv()
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		logger.Println("warning: ANTHROPIC_API_KEY is not set; pi will fail on first prompt")
+	}
+
 	client, err := bridge.NewClient(token, allow, logger)
 	if err != nil {
 		die("init telegram: %v", err)
 	}
 	name, botID := client.Self()
-	logger.Printf("connected as @%s (id=%d), target=%s repo=%s, allowed_users=%v",
-		name, botID, target.Name, target.RepoPath, ids)
+	logger.Printf("connected as @%s (id=%d), target=%s repo=%s pi.provider=%s, allowed_users=%v",
+		name, botID, target.Name, target.RepoPath, piCfg.Provider, ids)
 
-	handler := func(ctx context.Context, sess *bridge.Session, msg bridge.Message) {
-		runOneTask(ctx, logger, client, wt, sess, msg)
+	handler := &bridge.Handler{
+		Worktrees: wt,
+		Client:    client,
+		SpawnPi:   bridge.NewPiSpawner(piCfg),
+		Logger:    logger,
 	}
-	router := bridge.NewRouter(handler)
+	router := bridge.NewRouter(handler.Run)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -100,57 +107,6 @@ func main() {
 		die("run: %v", err)
 	}
 	logger.Println("shutting down")
-}
-
-// runOneTask is a 2.3 stand-in for what 2.4+ will do with pi: spawn a
-// worktree, run a canned command inside it, report results, clean up.
-func runOneTask(
-	parent context.Context,
-	logger *log.Logger,
-	client *bridge.Client,
-	wt *bridge.WorktreeManager,
-	sess *bridge.Session,
-	msg bridge.Message,
-) {
-	ctx, cancel := context.WithTimeout(parent, worktreeTaskTimeout)
-	defer cancel()
-
-	logger.Printf("task chat=%d user=%d text=%q", msg.ChatID, msg.UserID, msg.Text)
-
-	path, branch, err := wt.Create(ctx, sess.ChatID)
-	if err != nil {
-		logger.Printf("create worktree: %v", err)
-		_, _ = client.Send(msg.ChatID, "❌ create worktree: "+err.Error())
-		return
-	}
-
-	out, lsErr := runLS(ctx, path)
-	reply := fmt.Sprintf("🌱 worktree: %s\nbranch: %s\n\nls -la:\n%s",
-		path, branch, out)
-	if lsErr != nil {
-		reply += "\n\n(ls error: " + lsErr.Error() + ")"
-	}
-	if _, err := client.Send(msg.ChatID, reply); err != nil {
-		logger.Printf("send: %v", err)
-	}
-
-	if err := wt.Remove(ctx, path, branch); err != nil {
-		logger.Printf("remove worktree: %v", err)
-		_, _ = client.Send(msg.ChatID, "⚠️ worktree cleanup failed: "+err.Error())
-	}
-}
-
-func runLS(ctx context.Context, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, "ls", "-la")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	text := strings.TrimRight(string(out), "\n")
-	lines := strings.Split(text, "\n")
-	if len(lines) > lsMaxLines {
-		lines = append(lines[:lsMaxLines], "...(truncated)")
-		text = strings.Join(lines, "\n")
-	}
-	return text, err
 }
 
 func die(format string, a ...any) {

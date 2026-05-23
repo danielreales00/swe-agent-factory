@@ -4,15 +4,24 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/danielreales00/swe-agent-factory/internal/agent"
 )
 
-// Session holds per-chat state. For 2.3 it carries identity + a mutex that
-// serializes message handling. Future increments add an active pi process
-// and worktree path; for now those live in the handler closure.
+// Session holds per-chat state. The mutex serializes Router.Dispatch calls
+// for the same chat; different chats run concurrently.
+//
+// Pi/Worktree/Branch are nil/empty between tasks. They are populated when
+// the handler starts a new pi subprocess and cleared by the watcher
+// goroutine after pi exits.
 type Session struct {
 	ChatID    int64
 	UserID    int64
 	CreatedAt time.Time
+
+	Pi       *agent.Session // active pi subprocess; nil when idle
+	Worktree string         // path to the active worktree; "" when idle
+	Branch   string         // placeholder branch for the active worktree
 
 	mu sync.Mutex
 }
