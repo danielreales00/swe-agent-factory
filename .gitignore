@@ -1,4 +1,5 @@
 swe-agent
+demo
 /state/
 .env
 .env.local
