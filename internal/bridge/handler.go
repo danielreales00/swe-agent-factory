@@ -22,15 +22,22 @@ type Handler struct {
 	Worktrees *WorktreeManager
 	Client    *Client
 	SpawnPi   PiSpawner
+	Ship      Shipper
 	Logger    *log.Logger
 
 	// UIPromptTimeout is how long the bridge waits for a button tap before
 	// auto-denying an extension_ui_request{confirm}. Zero means no timeout
 	// (pi blocks until the user replies). Default 5 minutes.
 	UIPromptTimeout time.Duration
+
+	// ShipTimeout caps the git push + gh pr create combo. Default 60s.
+	ShipTimeout time.Duration
 }
 
-const defaultUIPromptTimeout = 5 * time.Minute
+const (
+	defaultUIPromptTimeout = 5 * time.Minute
+	defaultShipTimeout     = 60 * time.Second
+)
 
 // Run is called by the Router under the session's lock. The state machine:
 //   - sess.Pi nil    → create worktree, spawn pi, prompt
@@ -138,6 +145,12 @@ func (h *Handler) handlePiEvent(sess *Session, chatID int64, e agent.Event) {
 				if _, err := h.Client.Send(chatID, body); err != nil {
 					h.Logger.Printf("send tool error body to chat=%d: %v", chatID, err)
 				}
+			}
+		}
+
+		if name == "request_ship" && !ev.IsError {
+			if req, ok := ParseShipRequestArgs(args); ok {
+				h.triggerShip(sess, chatID, req)
 			}
 		}
 
@@ -341,6 +354,44 @@ func (h *Handler) cancelAllPendingUIs(sess *Session, chatID int64, reason string
 		}
 	}
 	clear(sess.pendingUIs)
+}
+
+// triggerShip captures the worktree path off sess and launches the ship
+// flow in a goroutine. Called from handlePiEvent (pi reader goroutine).
+//
+// Safe to read sess.Worktree here: watchPiExit only mutates it after pi
+// has fully exited and the reader has closed, which is strictly after the
+// reader emits its last tool_execution_end event.
+func (h *Handler) triggerShip(sess *Session, chatID int64, req ShipRequest) {
+	if h.Ship == nil {
+		h.Logger.Printf("ship request received but no Shipper configured (chat=%d branch=%s)",
+			chatID, req.Branch)
+		return
+	}
+	worktree := sess.Worktree
+	if worktree == "" {
+		h.Logger.Printf("ship request with no worktree (chat=%d branch=%s)", chatID, req.Branch)
+		return
+	}
+	go h.runShip(chatID, worktree, req)
+}
+
+func (h *Handler) runShip(chatID int64, worktree string, req ShipRequest) {
+	timeout := h.ShipTimeout
+	if timeout == 0 {
+		timeout = defaultShipTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	h.notify(chatID, "📦 pushing "+req.Branch+"…")
+	url, err := h.Ship.Ship(ctx, worktree, req)
+	if err != nil {
+		h.Logger.Printf("ship failed (chat=%d branch=%s): %v", chatID, req.Branch, err)
+		h.notify(chatID, "❌ ship failed: "+err.Error())
+		return
+	}
+	h.notify(chatID, "✅ draft PR opened\n"+url)
 }
 
 func (h *Handler) notify(chatID int64, text string) {

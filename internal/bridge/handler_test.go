@@ -1,7 +1,10 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
+	"strings"
 	"testing"
 
 	"github.com/danielreales00/swe-agent-factory/internal/agent"
@@ -88,6 +91,29 @@ func TestExtractContentText_AllToolBlocks(t *testing.T) {
 	got := extractContentText(content)
 	if got != "" {
 		t.Errorf("got = %q, want empty (no text blocks)", got)
+	}
+}
+
+func TestTriggerShip_NoShipperConfigured_LogsAndReturns(t *testing.T) {
+	var buf bytes.Buffer
+	h := &Handler{Logger: log.New(&buf, "", 0)}
+	sess := &Session{Worktree: "/some/path"}
+	h.triggerShip(sess, 42, ShipRequest{Branch: "swe-agent/x", Title: "t", Body: "b"})
+	if !strings.Contains(buf.String(), "no Shipper configured") {
+		t.Errorf("log = %q, want 'no Shipper configured'", buf.String())
+	}
+}
+
+func TestTriggerShip_NoWorktree_LogsAndReturns(t *testing.T) {
+	var buf bytes.Buffer
+	h := &Handler{
+		Ship:   &DefaultShipper{},
+		Logger: log.New(&buf, "", 0),
+	}
+	sess := &Session{} // Worktree empty
+	h.triggerShip(sess, 42, ShipRequest{Branch: "swe-agent/x", Title: "t", Body: "b"})
+	if !strings.Contains(buf.String(), "no worktree") {
+		t.Errorf("log = %q, want 'no worktree'", buf.String())
 	}
 }
 
