@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+#
+# Pre-flight checklist for the Telegram bridge.
+# Run from the swe-agent-factory repo root. Loads .env if present.
+# Exits non-zero on the first failed check.
+
+set -u
+
+cd "$(dirname "$0")/.."
+
+PI_EXPECTED=0.75.4
+GH_EXPECTED=danielreales00
+PASS=$'\033[32m✓\033[0m'
+FAIL=$'\033[31m✗\033[0m'
+WARN=$'\033[33m!\033[0m'
+fails=0
+
+say_pass() { printf "  %s %s\n" "$PASS" "$*"; }
+say_fail() { printf "  %s %s\n" "$FAIL" "$*"; fails=$((fails+1)); }
+say_warn() { printf "  %s %s\n" "$WARN" "$*"; }
+
+# .env shouldn't be required (env vars can come from the shell), but if
+# it's there, source it so the rest of the checks see the values.
+if [[ -f .env ]]; then
+  set -a; . ./.env; set +a
+  say_pass ".env sourced"
+else
+  say_warn ".env not present (using current shell env)"
+fi
+
+echo
+echo "== binaries =="
+if command -v pi >/dev/null 2>&1; then
+  v=$(pi --version 2>&1 | head -1)
+  if [[ "$v" == "$PI_EXPECTED" ]]; then
+    say_pass "pi $v"
+  else
+    say_warn "pi ${v:-unknown} (tested against $PI_EXPECTED)"
+  fi
+else
+  say_fail "pi not in PATH"
+fi
+
+if command -v gh >/dev/null 2>&1; then
+  active=$(gh auth status 2>&1 | awk '
+    /Logged in to .* account / { for(i=1;i<=NF;i++) if($i=="account") { name=$(i+1); break } }
+    /Active account: true/     { print name; exit }
+  ')
+  if [[ "$active" == "$GH_EXPECTED" ]]; then
+    say_pass "gh active account = $active"
+  else
+    say_fail "gh active account = ${active:-none}, want $GH_EXPECTED — run: gh auth switch --user $GH_EXPECTED && gh auth setup-git"
+  fi
+else
+  say_fail "gh not in PATH"
+fi
+
+if command -v go >/dev/null 2>&1; then
+  say_pass "go $(go version | awk '{print $3}')"
+else
+  say_fail "go not in PATH"
+fi
+
+echo
+echo "== env =="
+for k in BRIDGE_TG_TOKEN BRIDGE_ALLOWED_USER_IDS ANTHROPIC_API_KEY; do
+  if [[ -n "${!k:-}" ]]; then
+    say_pass "$k set"
+  else
+    say_fail "$k missing"
+  fi
+done
+
+echo
+echo "== targets =="
+targets_dir="${BRIDGE_TARGETS_DIR:-./targets}"
+if [[ ! -d "$targets_dir" ]]; then
+  say_fail "targets dir not found: $targets_dir"
+else
+  shopt -s nullglob
+  ymls=("$targets_dir"/*.yml "$targets_dir"/*.yaml)
+  if [[ ${#ymls[@]} -eq 0 ]]; then
+    say_fail "no *.yml in $targets_dir"
+  fi
+  for f in "${ymls[@]}"; do
+    name=$(basename "$f")
+    local_path=$(awk -F: '/^local_path:/{sub(/^ */,"",$2); print $2}' "$f")
+    if [[ -z "$local_path" ]]; then
+      say_fail "$name: missing local_path"
+      continue
+    fi
+    if [[ ! -d "$local_path/.git" ]]; then
+      say_fail "$name: local_path '$local_path' is not a git repo"
+      continue
+    fi
+    say_pass "$name → $local_path"
+
+    for ext in permission-gate.ts plan-gate.ts request-ship.ts; do
+      if [[ -f "$local_path/.pi/extensions/$ext" ]]; then
+        say_pass "  $ext"
+      else
+        say_fail "  $local_path/.pi/extensions/$ext missing"
+      fi
+    done
+  done
+fi
+
+echo
+echo "== build =="
+if go build -o /tmp/bridge-preflight ./cmd/bridge 2>/tmp/bridge-preflight.err; then
+  say_pass "go build ./cmd/bridge"
+  rm -f /tmp/bridge-preflight
+else
+  say_fail "go build failed — see /tmp/bridge-preflight.err"
+fi
+
+echo
+if [[ "$fails" -eq 0 ]]; then
+  printf "%s preflight OK\n" "$PASS"
+  exit 0
+else
+  printf "%s preflight: %d failure(s)\n" "$FAIL" "$fails"
+  exit 1
+fi
