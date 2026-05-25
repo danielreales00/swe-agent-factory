@@ -22,10 +22,11 @@ func targetFromRepo(repo string) Target {
 
 func TestWorktreeManager_CreateAndRemove(t *testing.T) {
 	repo := setupGitRepo(t)
-	mgr := NewWorktreeManager(targetFromRepo(repo))
+	mgr := NewWorktreeManager()
+	target := targetFromRepo(repo)
 	ctx := context.Background()
 
-	path, branch, err := mgr.Create(ctx, 12345)
+	path, branch, err := mgr.Create(ctx, target, 12345)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestWorktreeManager_CreateAndRemove(t *testing.T) {
 		t.Errorf("placeholder branch %q missing after Create", branch)
 	}
 
-	if err := mgr.Remove(ctx, path, branch); err != nil {
+	if err := mgr.Remove(ctx, target, path, branch); err != nil {
 		t.Errorf("Remove: %v", err)
 	}
 	if _, err := os.Stat(path); err == nil {
@@ -58,14 +59,15 @@ func TestWorktreeManager_CreateAndRemove(t *testing.T) {
 
 func TestWorktreeManager_GC_RemovesStaleOnly(t *testing.T) {
 	repo := setupGitRepo(t)
-	mgr := NewWorktreeManager(targetFromRepo(repo))
+	mgr := NewWorktreeManager()
+	target := targetFromRepo(repo)
 	ctx := context.Background()
 
-	pathOld, _, err := mgr.Create(ctx, 1)
+	pathOld, _, err := mgr.Create(ctx, target, 1)
 	if err != nil {
 		t.Fatalf("Create old: %v", err)
 	}
-	pathNew, _, err := mgr.Create(ctx, 2)
+	pathNew, _, err := mgr.Create(ctx, target, 2)
 	if err != nil {
 		t.Fatalf("Create new: %v", err)
 	}
@@ -76,7 +78,7 @@ func TestWorktreeManager_GC_RemovesStaleOnly(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	n, err := mgr.GC(ctx, 24*time.Hour)
+	n, err := mgr.GC(ctx, target, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("GC: %v", err)
 	}
@@ -93,7 +95,8 @@ func TestWorktreeManager_GC_RemovesStaleOnly(t *testing.T) {
 
 func TestWorktreeManager_GC_IgnoresUnrelatedDirs(t *testing.T) {
 	repo := setupGitRepo(t)
-	mgr := NewWorktreeManager(targetFromRepo(repo))
+	mgr := NewWorktreeManager()
+	target := targetFromRepo(repo)
 	ctx := context.Background()
 
 	unrelated := filepath.Join(filepath.Dir(repo), "some-other-dir")
@@ -105,7 +108,7 @@ func TestWorktreeManager_GC_IgnoresUnrelatedDirs(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	n, err := mgr.GC(ctx, 24*time.Hour)
+	n, err := mgr.GC(ctx, target, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("GC: %v", err)
 	}
@@ -119,13 +122,14 @@ func TestWorktreeManager_GC_IgnoresUnrelatedDirs(t *testing.T) {
 
 func TestWorktreeManager_BranchEncodesChatID(t *testing.T) {
 	repo := setupGitRepo(t)
-	mgr := NewWorktreeManager(targetFromRepo(repo))
+	mgr := NewWorktreeManager()
+	target := targetFromRepo(repo)
 
-	_, branch1, err := mgr.Create(context.Background(), 99)
+	_, branch1, err := mgr.Create(context.Background(), target, 99)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	_, branch2, err := mgr.Create(context.Background(), 100)
+	_, branch2, err := mgr.Create(context.Background(), target, 100)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

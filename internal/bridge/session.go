@@ -19,6 +19,8 @@ type Session struct {
 	UserID    int64
 	CreatedAt time.Time
 
+	Target Target // active target; new sessions get Router.DefaultTarget; /repo mutates
+
 	Pi       *agent.Session // active pi subprocess; nil when idle
 	Worktree string         // path to the active worktree; "" when idle
 	Branch   string         // placeholder branch for the active worktree
@@ -75,6 +77,10 @@ type Router struct {
 	sessions map[int64]*Session
 	handler  SessionHandler
 
+	// DefaultTarget is assigned to a new session's Target field on creation.
+	// /repo can mutate it later.
+	DefaultTarget Target
+
 	// OnCallback handles Telegram callback queries (button taps). Optional;
 	// nil means callbacks are dropped.
 	OnCallback CallbackSessionHandler
@@ -129,6 +135,7 @@ func (r *Router) session(chatID, userID int64) *Session {
 		ChatID:     chatID,
 		UserID:     userID,
 		CreatedAt:  time.Now(),
+		Target:     r.DefaultTarget,
 		inFlight:   map[string]ToolStart{},
 		pendingUIs: map[string]*PendingUI{},
 	}

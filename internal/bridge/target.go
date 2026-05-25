@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/danielreales00/swe-agent-factory/internal/config"
 )
 
 // Target is the bridge's runtime view of a target repo: where it lives,
 // which branch worktrees fork from, where worktrees should be created.
 //
-// 2.3 loads one target from env vars. 2.8 will load multiple from
-// targets/*.yml via /repo selection.
+// 2.8 loads multiple Targets from targets/*.yml via Registry. Sessions
+// pick one with /repo and may switch between tasks.
 type Target struct {
 	Name          string // human-readable, e.g. "personal_finance"
 	RepoPath      string // absolute path to the live repo
@@ -20,49 +22,41 @@ type Target struct {
 	BranchPrefix  string // placeholder branches use this prefix, e.g. "bridge/"
 }
 
-// TargetFromEnv builds a Target from BRIDGE_TARGET_* env vars.
-//
-// Required:
-//
-//	BRIDGE_TARGET_NAME       (e.g. "personal_finance")
-//	BRIDGE_TARGET_REPO_PATH  (absolute, must contain a .git entry)
-//
-// Optional:
-//
-//	BRIDGE_TARGET_DEFAULT_BRANCH  default: "main"
-//	BRIDGE_TARGET_WORKTREE_ROOT   default: parent dir of RepoPath
-//	BRIDGE_TARGET_BRANCH_PREFIX   default: "bridge/"
-func TargetFromEnv() (Target, error) {
-	name := os.Getenv("BRIDGE_TARGET_NAME")
+// TargetFromDescriptor resolves a parsed targets/<name>.yml into a runtime
+// Target. Verifies the repo exists locally; applies defaults for branch /
+// worktree root / branch prefix.
+func TargetFromDescriptor(name string, td *config.TargetDescriptor) (Target, error) {
 	if name == "" {
-		return Target{}, errors.New("BRIDGE_TARGET_NAME is required")
+		return Target{}, errors.New("target name is required")
 	}
-	path := os.Getenv("BRIDGE_TARGET_REPO_PATH")
-	if path == "" {
-		return Target{}, errors.New("BRIDGE_TARGET_REPO_PATH is required")
+	if td == nil {
+		return Target{}, errors.New("nil descriptor")
 	}
-	abs, err := filepath.Abs(path)
+	if td.LocalPath == "" {
+		return Target{}, fmt.Errorf("target %q: local_path is required", name)
+	}
+	abs, err := filepath.Abs(td.LocalPath)
 	if err != nil {
-		return Target{}, fmt.Errorf("resolve repo path: %w", err)
+		return Target{}, fmt.Errorf("target %q: resolve local_path: %w", name, err)
 	}
 	if _, err := os.Stat(filepath.Join(abs, ".git")); err != nil {
-		return Target{}, fmt.Errorf("not a git repo: %s", abs)
+		return Target{}, fmt.Errorf("target %q: not a git repo: %s", name, abs)
 	}
 
-	branch := os.Getenv("BRIDGE_TARGET_DEFAULT_BRANCH")
+	branch := td.DefaultBranch
 	if branch == "" {
 		branch = "main"
 	}
-	wtRoot := os.Getenv("BRIDGE_TARGET_WORKTREE_ROOT")
+	wtRoot := td.WorktreeRoot
 	if wtRoot == "" {
 		wtRoot = filepath.Dir(abs)
 	} else {
 		wtRoot, err = filepath.Abs(wtRoot)
 		if err != nil {
-			return Target{}, fmt.Errorf("resolve worktree root: %w", err)
+			return Target{}, fmt.Errorf("target %q: resolve worktree_root: %w", name, err)
 		}
 	}
-	prefix := os.Getenv("BRIDGE_TARGET_BRANCH_PREFIX")
+	prefix := td.BranchPrefix
 	if prefix == "" {
 		prefix = "bridge/"
 	}

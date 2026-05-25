@@ -1,2 +1,3 @@
 repo:          https://github.com/danielreales00/personal_finance.git
 manifest_path: .swe-agent.yml
+local_path:    /Users/danielreales/personal/personal_finance
