@@ -24,6 +24,19 @@ type Session struct {
 	Branch   string         // placeholder branch for the active worktree
 
 	mu sync.Mutex
+
+	// inFlight tracks tool_execution_start events keyed by toolCallId so the
+	// matching tool_execution_end can be rendered with the original args.
+	// Guarded by toolMu; mutated from pi's reader goroutine via OnEvent.
+	toolMu   sync.Mutex
+	inFlight map[string]ToolStart
+}
+
+// ToolStart is the subset of a tool_execution_start event needed to render
+// the matching tool_execution_end.
+type ToolStart struct {
+	Name string
+	Args map[string]any
 }
 
 // SessionHandler handles one message under a session's lock. The Router
@@ -76,6 +89,7 @@ func (r *Router) session(chatID, userID int64) *Session {
 		ChatID:    chatID,
 		UserID:    userID,
 		CreatedAt: time.Now(),
+		inFlight:  map[string]ToolStart{},
 	}
 	r.sessions[chatID] = s
 	return s
