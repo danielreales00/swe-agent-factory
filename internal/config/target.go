@@ -9,10 +9,18 @@ import (
 )
 
 // TargetDescriptor lives at targets/<name>.yml. Tells the factory how to
-// fetch the target repo and where its manifest lives inside.
+// fetch the target repo (Repo + LocalPath) and where its manifest lives
+// inside (ManifestPath). Branch / worktree fields are optional with
+// bridge-side defaults.
 type TargetDescriptor struct {
-	Repo         string `yaml:"repo"`
-	ManifestPath string `yaml:"manifest_path"`
+	Repo         string `yaml:"repo"`          // git URL (for record; future clone)
+	ManifestPath string `yaml:"manifest_path"` // relative to repo root
+	LocalPath    string `yaml:"local_path"`    // absolute path to the live clone
+
+	// Runtime overrides for the bridge. All optional.
+	DefaultBranch string `yaml:"default_branch"` // default: "main"
+	WorktreeRoot  string `yaml:"worktree_root"`  // default: parent of LocalPath
+	BranchPrefix  string `yaml:"branch_prefix"`  // default: "bridge/"
 }
 
 // Manifest mirrors .swe-agent.yml. Only fields the factory actually reads

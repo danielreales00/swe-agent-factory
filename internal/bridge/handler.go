@@ -19,6 +19,7 @@ type PiSpawner func(ctx context.Context, worktree string, chatID int64) (*agent.
 // Handler is the bridge's per-message logic. Holds dependencies shared by
 // every chat; Run is wired into the Router as the SessionHandler.
 type Handler struct {
+	Registry  *Registry
 	Worktrees *WorktreeManager
 	Client    *Client
 	SpawnPi   PiSpawner
@@ -40,6 +41,7 @@ const (
 )
 
 // Run is called by the Router under the session's lock. The state machine:
+//   - msg is /repo or /cancel → command branch (never spawns pi)
 //   - sess.Pi nil    → create worktree, spawn pi, prompt
 //   - sess.Pi alive  → forward as another prompt
 //   - sess.Pi dead   → clean up inline, then start fresh
@@ -51,6 +53,11 @@ func (h *Handler) Run(ctx context.Context, sess *Session, msg Message) {
 			h.cleanupPi(ctx, sess)
 		default:
 		}
+	}
+
+	if cmd := ParseCommand(msg.Text); cmd.Kind != CmdNone {
+		h.runCommand(sess, msg.ChatID, cmd)
+		return
 	}
 
 	if sess.Pi == nil {
@@ -66,8 +73,29 @@ func (h *Handler) Run(ctx context.Context, sess *Session, msg Message) {
 	}
 }
 
+// runCommand applies the pure ExecuteCommand result: sends the reply, then
+// applies any state effect (cancel pi, switch target). Called under sess.mu
+// via Router.Dispatch — safe to read/write sess.Target / sess.Pi.
+func (h *Handler) runCommand(sess *Session, chatID int64, cmd Command) {
+	reply := ExecuteCommand(cmd, sess, h.Registry)
+	if reply.Reply != "" {
+		h.notify(chatID, reply.Reply)
+	}
+	if reply.SwitchTarget != nil {
+		sess.Target = *reply.SwitchTarget
+	}
+	if reply.Cancel && sess.Pi != nil {
+		sess.Pi.Cancel()
+	}
+}
+
 func (h *Handler) startSession(ctx context.Context, sess *Session, chatID int64) error {
-	path, branch, err := h.Worktrees.Create(ctx, chatID)
+	if sess.Target.Name == "" {
+		h.notify(chatID, "❌ no target selected. /repo to pick one.")
+		return fmt.Errorf("no target on session")
+	}
+	target := sess.Target
+	path, branch, err := h.Worktrees.Create(ctx, target, chatID)
 	if err != nil {
 		h.notify(chatID, "❌ create worktree: "+err.Error())
 		return fmt.Errorf("create worktree: %w", err)
@@ -76,7 +104,7 @@ func (h *Handler) startSession(ctx context.Context, sess *Session, chatID int64)
 	piSess, err := h.SpawnPi(ctx, path, chatID)
 	if err != nil {
 		h.notify(chatID, "❌ spawn pi: "+err.Error())
-		_ = h.Worktrees.Remove(context.Background(), path, branch)
+		_ = h.Worktrees.Remove(context.Background(), target, path, branch)
 		return fmt.Errorf("spawn pi: %w", err)
 	}
 
@@ -93,7 +121,8 @@ func (h *Handler) startSession(ctx context.Context, sess *Session, chatID int64)
 
 	go h.watchPiExit(sess, chatID, piSess)
 
-	h.notify(chatID, fmt.Sprintf("🌱 worktree: %s\nbranch: %s\npi ready.", path, branch))
+	h.notify(chatID, fmt.Sprintf("🌱 worktree: %s\nbranch: %s\ntarget: %s\npi ready.",
+		path, branch, target.Name))
 	return nil
 }
 
@@ -189,7 +218,7 @@ func (h *Handler) watchPiExit(sess *Session, chatID int64, piSess *agent.Session
 		return
 	}
 
-	worktree, branch := sess.Worktree, sess.Branch
+	worktree, branch, target := sess.Worktree, sess.Branch, sess.Target
 	sess.Pi = nil
 	sess.Worktree = ""
 	sess.Branch = ""
@@ -200,7 +229,7 @@ func (h *Handler) watchPiExit(sess *Session, chatID int64, piSess *agent.Session
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := h.Worktrees.Remove(ctx, worktree, branch); err != nil {
+	if err := h.Worktrees.Remove(ctx, target, worktree, branch); err != nil {
 		h.Logger.Printf("post-exit worktree cleanup: %v", err)
 	}
 	h.notify(chatID, "💀 pi exited. Worktree cleaned. Next message starts fresh.")
@@ -210,7 +239,7 @@ func (h *Handler) watchPiExit(sess *Session, chatID int64, piSess *agent.Session
 // is already done but the watcher hasn't acquired the lock yet. Called
 // under sess.mu.
 func (h *Handler) cleanupPi(ctx context.Context, sess *Session) {
-	worktree, branch := sess.Worktree, sess.Branch
+	worktree, branch, target := sess.Worktree, sess.Branch, sess.Target
 	sess.Pi = nil
 	sess.Worktree = ""
 	sess.Branch = ""
@@ -219,7 +248,7 @@ func (h *Handler) cleanupPi(ctx context.Context, sess *Session) {
 	sess.toolMu.Unlock()
 	h.cancelAllPendingUIs(sess, sess.ChatID, "(pi exited before reply)")
 	if worktree != "" {
-		if err := h.Worktrees.Remove(ctx, worktree, branch); err != nil {
+		if err := h.Worktrees.Remove(ctx, target, worktree, branch); err != nil {
 			h.Logger.Printf("inline worktree cleanup: %v", err)
 		}
 	}

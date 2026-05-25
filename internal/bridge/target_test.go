@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/danielreales00/swe-agent-factory/internal/config"
 )
 
 // setupGitRepo creates a fresh git repo in a temp dir with one initial
@@ -40,91 +42,74 @@ func setupGitRepo(t *testing.T) string {
 	return repo
 }
 
-func TestTargetFromEnv_HappyPath(t *testing.T) {
+func TestTargetFromDescriptor_HappyPath_Defaults(t *testing.T) {
 	repo := setupGitRepo(t)
-	t.Setenv("BRIDGE_TARGET_NAME", "test_target")
-	t.Setenv("BRIDGE_TARGET_REPO_PATH", repo)
-	t.Setenv("BRIDGE_TARGET_DEFAULT_BRANCH", "")
-	t.Setenv("BRIDGE_TARGET_WORKTREE_ROOT", "")
-	t.Setenv("BRIDGE_TARGET_BRANCH_PREFIX", "")
+	td := &config.TargetDescriptor{LocalPath: repo}
 
-	target, err := TargetFromEnv()
+	target, err := TargetFromDescriptor("test_target", td)
 	if err != nil {
-		t.Fatalf("TargetFromEnv: %v", err)
+		t.Fatalf("TargetFromDescriptor: %v", err)
 	}
 	if target.Name != "test_target" {
-		t.Errorf("Name = %q, want test_target", target.Name)
+		t.Errorf("Name = %q", target.Name)
 	}
 	if target.RepoPath != repo {
 		t.Errorf("RepoPath = %q, want %q", target.RepoPath, repo)
 	}
 	if target.DefaultBranch != "main" {
-		t.Errorf("DefaultBranch = %q, want main (default)", target.DefaultBranch)
+		t.Errorf("DefaultBranch = %q, want main", target.DefaultBranch)
 	}
 	if target.WorktreeRoot != filepath.Dir(repo) {
 		t.Errorf("WorktreeRoot = %q, want parent of repo", target.WorktreeRoot)
 	}
 	if target.BranchPrefix != "bridge/" {
-		t.Errorf("BranchPrefix = %q, want bridge/", target.BranchPrefix)
+		t.Errorf("BranchPrefix = %q", target.BranchPrefix)
 	}
 }
 
-func TestTargetFromEnv_OverrideDefaults(t *testing.T) {
+func TestTargetFromDescriptor_OverrideDefaults(t *testing.T) {
 	repo := setupGitRepo(t)
 	customRoot := t.TempDir()
-	t.Setenv("BRIDGE_TARGET_NAME", "x")
-	t.Setenv("BRIDGE_TARGET_REPO_PATH", repo)
-	t.Setenv("BRIDGE_TARGET_DEFAULT_BRANCH", "trunk")
-	t.Setenv("BRIDGE_TARGET_WORKTREE_ROOT", customRoot)
-	t.Setenv("BRIDGE_TARGET_BRANCH_PREFIX", "tg/")
-
-	target, err := TargetFromEnv()
+	td := &config.TargetDescriptor{
+		LocalPath:     repo,
+		DefaultBranch: "trunk",
+		WorktreeRoot:  customRoot,
+		BranchPrefix:  "tg/",
+	}
+	target, err := TargetFromDescriptor("x", td)
 	if err != nil {
-		t.Fatalf("TargetFromEnv: %v", err)
+		t.Fatalf("TargetFromDescriptor: %v", err)
 	}
-	if target.DefaultBranch != "trunk" {
-		t.Errorf("DefaultBranch = %q, want trunk", target.DefaultBranch)
-	}
-	if target.WorktreeRoot != customRoot {
-		t.Errorf("WorktreeRoot = %q, want %q", target.WorktreeRoot, customRoot)
-	}
-	if target.BranchPrefix != "tg/" {
-		t.Errorf("BranchPrefix = %q, want tg/", target.BranchPrefix)
+	if target.DefaultBranch != "trunk" || target.WorktreeRoot != customRoot || target.BranchPrefix != "tg/" {
+		t.Errorf("overrides not applied: %+v", target)
 	}
 }
 
-func TestTargetFromEnv_MissingName(t *testing.T) {
-	t.Setenv("BRIDGE_TARGET_NAME", "")
-	t.Setenv("BRIDGE_TARGET_REPO_PATH", "/tmp")
-	_, err := TargetFromEnv()
-	if err == nil {
-		t.Fatal("want error")
-	}
-	if !strings.Contains(err.Error(), "BRIDGE_TARGET_NAME") {
-		t.Errorf("error %q doesn't mention BRIDGE_TARGET_NAME", err)
+func TestTargetFromDescriptor_EmptyName(t *testing.T) {
+	repo := setupGitRepo(t)
+	_, err := TargetFromDescriptor("", &config.TargetDescriptor{LocalPath: repo})
+	if err == nil || !strings.Contains(err.Error(), "name") {
+		t.Errorf("err = %v, want name error", err)
 	}
 }
 
-func TestTargetFromEnv_MissingRepoPath(t *testing.T) {
-	t.Setenv("BRIDGE_TARGET_NAME", "x")
-	t.Setenv("BRIDGE_TARGET_REPO_PATH", "")
-	_, err := TargetFromEnv()
+func TestTargetFromDescriptor_NilDescriptor(t *testing.T) {
+	_, err := TargetFromDescriptor("x", nil)
 	if err == nil {
 		t.Fatal("want error")
-	}
-	if !strings.Contains(err.Error(), "BRIDGE_TARGET_REPO_PATH") {
-		t.Errorf("error %q doesn't mention BRIDGE_TARGET_REPO_PATH", err)
 	}
 }
 
-func TestTargetFromEnv_NotGitRepo(t *testing.T) {
-	t.Setenv("BRIDGE_TARGET_NAME", "x")
-	t.Setenv("BRIDGE_TARGET_REPO_PATH", t.TempDir())
-	_, err := TargetFromEnv()
-	if err == nil {
-		t.Fatal("want error")
+func TestTargetFromDescriptor_MissingLocalPath(t *testing.T) {
+	_, err := TargetFromDescriptor("x", &config.TargetDescriptor{})
+	if err == nil || !strings.Contains(err.Error(), "local_path") {
+		t.Errorf("err = %v, want local_path error", err)
 	}
-	if !strings.Contains(err.Error(), "not a git repo") {
-		t.Errorf("error %q doesn't mention not-a-git-repo", err)
+}
+
+func TestTargetFromDescriptor_NotGitRepo(t *testing.T) {
+	_, err := TargetFromDescriptor("x", &config.TargetDescriptor{LocalPath: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "not a git repo") {
+		t.Errorf("err = %v, want not-a-git-repo error", err)
 	}
 }

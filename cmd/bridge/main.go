@@ -1,25 +1,20 @@
 // bridge — Telegram-side entrypoint for the SWE-Agent Factory.
 //
-// 2.7 scope: each Telegram chat maps to a long-lived pi --mode rpc session
-// running in a fresh git worktree of the target repo. User messages become
-// pi prompts; pi assistant messages stream back to the chat. Tool calls
-// render as compact lines (2.5). Permission-gated calls surface as inline
-// buttons (2.6). `request_ship` triggers `git push` + `gh pr create --draft`
-// and posts the PR URL back to the chat (2.7). No /repo command yet (2.8).
+// 2.8 scope: each Telegram chat maps to a long-lived pi --mode rpc session
+// running in a fresh git worktree of the target repo. Targets are loaded
+// from targets/*.yml at boot (BRIDGE_TARGETS_DIR override). `/repo` lists
+// or switches targets per chat; `/cancel` aborts the active pi.
+// `request_ship` triggers `git push` + `gh pr create --draft` (2.7).
 //
 // Required env (loadable from .env in cwd):
 //
 //	BRIDGE_TG_TOKEN              Telegram bot token from @BotFather
 //	BRIDGE_ALLOWED_USER_IDS      comma-separated Telegram user IDs
-//	BRIDGE_TARGET_NAME           human-readable target tag
-//	BRIDGE_TARGET_REPO_PATH      absolute path to a git repo
 //	ANTHROPIC_API_KEY            pi's LLM credential
 //
 // Optional env:
 //
-//	BRIDGE_TARGET_DEFAULT_BRANCH (default "main")
-//	BRIDGE_TARGET_WORKTREE_ROOT  (default: parent dir of repo)
-//	BRIDGE_TARGET_BRANCH_PREFIX  (default "bridge/")
+//	BRIDGE_TARGETS_DIR           (default "./targets")
 //	BRIDGE_PI_PROVIDER           (default "anthropic")
 //	BRIDGE_PI_MODEL              (default: provider default)
 //	BRIDGE_PI_SESSIONS_ROOT      (default ".bridge/sessions")
@@ -66,17 +61,23 @@ func main() {
 	}
 	allow := bridge.NewAllowlist(ids)
 
-	target, err := bridge.TargetFromEnv()
-	if err != nil {
-		die("target: %v", err)
+	targetsDir := os.Getenv("BRIDGE_TARGETS_DIR")
+	if targetsDir == "" {
+		targetsDir = "./targets"
 	}
-	wt := bridge.NewWorktreeManager(target)
+	reg, err := bridge.LoadRegistry(targetsDir)
+	if err != nil {
+		die("load targets: %v", err)
+	}
 
+	wt := bridge.NewWorktreeManager()
 	gcCtx, cancelGC := context.WithTimeout(context.Background(), startupGCTimeout)
-	if n, err := wt.GC(gcCtx, staleWorktreeMaxAge); err != nil {
-		logger.Printf("worktree GC error: %v", err)
-	} else if n > 0 {
-		logger.Printf("worktree GC: cleaned %d stale", n)
+	for _, t := range reg.All() {
+		if n, err := wt.GC(gcCtx, t, staleWorktreeMaxAge); err != nil {
+			logger.Printf("worktree GC %s: %v", t.Name, err)
+		} else if n > 0 {
+			logger.Printf("worktree GC %s: cleaned %d stale", t.Name, n)
+		}
 	}
 	cancelGC()
 
@@ -90,10 +91,11 @@ func main() {
 		die("init telegram: %v", err)
 	}
 	name, botID := client.Self()
-	logger.Printf("connected as @%s (id=%d), target=%s repo=%s pi.provider=%s, allowed_users=%v",
-		name, botID, target.Name, target.RepoPath, piCfg.Provider, ids)
+	logger.Printf("connected as @%s (id=%d), targets=%v default=%s pi.provider=%s, allowed_users=%v",
+		name, botID, reg.Names(), reg.Default().Name, piCfg.Provider, ids)
 
 	handler := &bridge.Handler{
+		Registry:  reg,
 		Worktrees: wt,
 		Client:    client,
 		SpawnPi:   bridge.NewPiSpawner(piCfg),
@@ -101,6 +103,7 @@ func main() {
 		Logger:    logger,
 	}
 	router := bridge.NewRouter(handler.Run)
+	router.DefaultTarget = reg.Default()
 	router.OnCallback = handler.HandleCallback
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
