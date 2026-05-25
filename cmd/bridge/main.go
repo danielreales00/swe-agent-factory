@@ -1,10 +1,11 @@
 // bridge — Telegram-side entrypoint for the SWE-Agent Factory.
 //
-// 2.4 scope: each Telegram chat maps to a long-lived pi --mode rpc session
+// 2.7 scope: each Telegram chat maps to a long-lived pi --mode rpc session
 // running in a fresh git worktree of the target repo. User messages become
-// pi prompts; pi assistant messages stream back to the chat. No tool
-// rendering yet (2.5), no Telegram-button approvals (2.6), no ship flow
-// (2.7), no /repo command (2.8).
+// pi prompts; pi assistant messages stream back to the chat. Tool calls
+// render as compact lines (2.5). Permission-gated calls surface as inline
+// buttons (2.6). `request_ship` triggers `git push` + `gh pr create --draft`
+// and posts the PR URL back to the chat (2.7). No /repo command yet (2.8).
 //
 // Required env (loadable from .env in cwd):
 //
@@ -96,6 +97,7 @@ func main() {
 		Worktrees: wt,
 		Client:    client,
 		SpawnPi:   bridge.NewPiSpawner(piCfg),
+		Ship:      bridge.NewDefaultShipper(),
 		Logger:    logger,
 	}
 	router := bridge.NewRouter(handler.Run)
