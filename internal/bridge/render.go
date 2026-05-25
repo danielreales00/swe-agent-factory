@@ -126,6 +126,62 @@ func RenderToolEnd(name string, args map[string]any, isError bool) string {
 	}
 }
 
+// ConfirmRequest is the subset of a confirm-style extension_ui_request the
+// renderer cares about.
+type ConfirmRequest struct {
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+// ParseConfirmRequest decodes the confirm-shaped fields out of an
+// extension_ui_request event payload.
+func ParseConfirmRequest(raw []byte) (ConfirmRequest, bool) {
+	var req ConfirmRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return ConfirmRequest{}, false
+	}
+	return req, true
+}
+
+// RenderConfirmPrompt produces the Telegram message body for a confirm
+// request. The bot adds inline approve/deny buttons separately.
+func RenderConfirmPrompt(req ConfirmRequest, autoDenyMins int) string {
+	var sb strings.Builder
+	sb.WriteString("🤚 ")
+	if req.Title != "" {
+		sb.WriteString(req.Title)
+	} else {
+		sb.WriteString("pi requests confirmation")
+	}
+	if req.Message != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(req.Message)
+	}
+	if autoDenyMins > 0 {
+		sb.WriteString(fmt.Sprintf("\n\n⏱ auto-denies in %d min", autoDenyMins))
+	}
+	return sb.String()
+}
+
+// EncodeCallbackData packs (action, reqID) into Telegram's 64-byte
+// callback_data slot. Format: "<action>:<reqID>" with action ∈ {"a","d"}.
+func EncodeCallbackData(action, reqID string) string {
+	return action + ":" + reqID
+}
+
+// DecodeCallbackData unpacks "a:<reqID>" / "d:<reqID>". Returns ok=false
+// for any other shape.
+func DecodeCallbackData(data string) (action, reqID string, ok bool) {
+	if len(data) < 3 || data[1] != ':' {
+		return "", "", false
+	}
+	action = data[:1]
+	if action != "a" && action != "d" {
+		return "", "", false
+	}
+	return action, data[2:], true
+}
+
 // FormatErrorBody clamps a tool result body to a reasonable Telegram-friendly
 // length and prefixes it. Returns "" if the body is empty/whitespace-only.
 func FormatErrorBody(body string) string {

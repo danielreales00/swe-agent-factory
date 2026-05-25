@@ -228,3 +228,102 @@ func TestFormatErrorBody_Truncates(t *testing.T) {
 		t.Errorf("len(got) = %d, want ~%d", len(got), errorBodyMaxLen)
 	}
 }
+
+func TestParseConfirmRequest(t *testing.T) {
+	raw := []byte(`{
+		"type": "extension_ui_request",
+		"id": "ui-1",
+		"method": "confirm",
+		"title": "Allow bash?",
+		"message": "rm -rf /tmp/foo"
+	}`)
+	req, ok := ParseConfirmRequest(raw)
+	if !ok {
+		t.Fatal("ParseConfirmRequest returned false")
+	}
+	if req.Title != "Allow bash?" {
+		t.Errorf("Title = %q", req.Title)
+	}
+	if req.Message != "rm -rf /tmp/foo" {
+		t.Errorf("Message = %q", req.Message)
+	}
+}
+
+func TestParseConfirmRequest_Malformed(t *testing.T) {
+	_, ok := ParseConfirmRequest([]byte("{not json"))
+	if ok {
+		t.Error("ParseConfirmRequest returned true for malformed json")
+	}
+}
+
+func TestRenderConfirmPrompt_FullPayload(t *testing.T) {
+	got := RenderConfirmPrompt(ConfirmRequest{
+		Title:   "Allow bash?",
+		Message: "rm -rf /tmp/foo",
+	}, 5)
+	want := "🤚 Allow bash?\n\nrm -rf /tmp/foo\n\n⏱ auto-denies in 5 min"
+	if got != want {
+		t.Errorf("got =\n%q\nwant =\n%q", got, want)
+	}
+}
+
+func TestRenderConfirmPrompt_NoTitleNoMessage(t *testing.T) {
+	got := RenderConfirmPrompt(ConfirmRequest{}, 5)
+	want := "🤚 pi requests confirmation\n\n⏱ auto-denies in 5 min"
+	if got != want {
+		t.Errorf("got = %q, want %q", got, want)
+	}
+}
+
+func TestRenderConfirmPrompt_NoTimeoutNote(t *testing.T) {
+	got := RenderConfirmPrompt(ConfirmRequest{Title: "x"}, 0)
+	if strings.Contains(got, "auto-denies") {
+		t.Errorf("got = %q, should not include timeout note when mins=0", got)
+	}
+}
+
+func TestEncodeDecodeCallbackData_Roundtrip(t *testing.T) {
+	cases := []struct {
+		action, reqID string
+	}{
+		{"a", "ui-1"},
+		{"d", "uuid-abc-def-123"},
+		{"a", "x"},
+	}
+	for _, tc := range cases {
+		data := EncodeCallbackData(tc.action, tc.reqID)
+		action, reqID, ok := DecodeCallbackData(data)
+		if !ok {
+			t.Errorf("decode(%q) ok=false", data)
+			continue
+		}
+		if action != tc.action || reqID != tc.reqID {
+			t.Errorf("roundtrip: encoded=%q decoded=(%q,%q), want (%q,%q)",
+				data, action, reqID, tc.action, tc.reqID)
+		}
+	}
+}
+
+func TestDecodeCallbackData_Rejected(t *testing.T) {
+	cases := []string{
+		"",
+		"a",
+		"ab",
+		"ab:x",   // action not in {a,d}
+		"x:foo",  // action not in {a,d}
+		"approve:ui-1", // long action, not allowed
+	}
+	for _, tc := range cases {
+		if _, _, ok := DecodeCallbackData(tc); ok {
+			t.Errorf("DecodeCallbackData(%q) ok=true, want false", tc)
+		}
+	}
+}
+
+func TestEncodeCallbackData_Under64Bytes(t *testing.T) {
+	// Telegram limits callback_data to 64 bytes. UUIDs (36 chars) + "a:" = 38.
+	uuid := "abcdef01-2345-6789-abcd-ef0123456789"
+	if got := EncodeCallbackData("a", uuid); len(got) > 64 {
+		t.Errorf("encoded len = %d > 64 (telegram limit)", len(got))
+	}
+}
