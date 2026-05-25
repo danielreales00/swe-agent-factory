@@ -99,11 +99,16 @@ func main() {
 		Logger:    logger,
 	}
 	router := bridge.NewRouter(handler.Run)
+	router.OnCallback = handler.HandleCallback
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := client.Run(ctx, router.Dispatch); err != nil && !errors.Is(err, context.Canceled) {
+	handlers := bridge.Handlers{
+		OnMessage:  router.Dispatch,
+		OnCallback: router.DispatchCallback,
+	}
+	if err := client.Run(ctx, handlers); err != nil && !errors.Is(err, context.Canceled) {
 		die("run: %v", err)
 	}
 	logger.Println("shutting down")
