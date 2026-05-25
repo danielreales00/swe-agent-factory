@@ -16,17 +16,24 @@
 
 ---
 
-## S2 — Telegram bridge 🔜
+## S2 — Telegram bridge ✅ *(code-complete; awaiting smoke test)*
 
-**What it is:** The factory runs as a server. When a gap is detected, it asks you on Telegram before implementing. You approve or skip from your phone. When the agent is done, it sends you the PR link.
+**What it is:** Telegram is pi's chat surface. You start a task by typing into the chat; pi runs in a fresh worktree per task, streams its work back as compact tool lines + assistant text, surfaces permission prompts as inline buttons, and finishes by pushing a branch and posting a draft-PR link.
 
-**New pieces needed:**
-- HTTP server with a Telegram webhook handler
-- Worker that spawns `pi --mode rpc` per approved work item
-- Telegram DM routing for `extension_ui_request` events from the agent
-- `request_ship` event captured server-side → GitHub PR opened automatically
+**What landed (9 PRs, 2.1 → 2.9):**
+- Pi RPC streaming + multi-turn `SendPrompt` (2.1)
+- Telegram client + allowlist (2.2)
+- Per-chat session + worktree lifecycle (2.3)
+- Pi wired into the session, assistant text streamed (2.4)
+- Compact tool-line rendering (2.5)
+- Permission prompts via inline buttons (2.6)
+- `request_ship` → `git push` + `gh pr create --draft` (2.7)
+- `targets/*.yml` registry + `/repo` + `/cancel` (2.8)
+- `.env.example` + `bin/preflight` + runbook (2.9)
 
-**What the human does:** taps [Yes] or [No] on their phone.
+**What the human does:** types tasks into the chat, taps approve/deny on permission prompts, reviews the draft PR.
+
+**Open:** the actual end-to-end smoke test ("add a unit test for `format-money` with a negative input" → draft PR lands) is operator-driven; see `docs/running-the-bridge.md`. Polish ideas (`/recover` for orphan worktrees, etc.) are deferred to post-validation.
 
 ---
 

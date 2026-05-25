@@ -288,17 +288,19 @@ Dependencies to add (`go.mod`):
 
 ## 7. Increments within S2
 
-| # | Deliverable | Validates |
-|---|---|---|
-| 2.1 | Extend `pi.go` with streaming callbacks + `SendPrompt`. Unit test against a fake pi binary that echoes a scripted event sequence. | The RPC primitive multi-turn flow works headlessly. |
-| 2.2 | Telegram client + echo bot scaffold. `cmd/bridge` boots, joins your chat, echoes anything you send. Allowlist enforced. | Telegram plumbing + auth gate. |
-| 2.3 | Session model + worktree lifecycle. First message in chat spawns a worktree, runs `ls` (not pi) via `bash`, reports back. | Worktree management without pi entanglement. |
-| 2.4 | Wire pi into the session. First non-command message spawns pi with the same `.pi/` config S1 uses, streams assistant deltas to Telegram. No tools yet. | Pi-in-Telegram bare bones. |
-| 2.5 | Tool rendering. Tool calls + results render as compact lines. | The user can watch pi work. |
-| 2.6 | Permission prompts via inline buttons. Plan-gate's questions surface as bot messages and your replies route back to pi. | Multi-turn user input fully wired. |
-| 2.7 | `request_ship` capture → branch rename → push → `gh pr create --draft`. PR URL posted to chat. | End-to-end loop closed. |
-| 2.8 | `/repo` command + `targets/` registry loading. `/cancel` command. | Multi-repo entry point exists; abort works. |
-| 2.9 | Real-task validation: tell the bot "add a unit test for `format-money` with a negative input", review the diff, ship. | S2 done. |
+All nine increments shipped to `main` between 2026-05-22 and 2026-05-25 as separate PRs (#1–#10, modulo the S1 carry-over). The smoke test in 2.9 is operator-driven; the runbook lives at `docs/running-the-bridge.md`.
+
+| # | Deliverable | Validates | Status |
+|---|---|---|---|
+| 2.1 | Extend `pi.go` with streaming callbacks + `SendPrompt`. Unit test against a fake pi binary that echoes a scripted event sequence. | The RPC primitive multi-turn flow works headlessly. | ✅ |
+| 2.2 | Telegram client + echo bot scaffold. `cmd/bridge` boots, joins your chat, echoes anything you send. Allowlist enforced. | Telegram plumbing + auth gate. | ✅ |
+| 2.3 | Session model + worktree lifecycle. First message in chat spawns a worktree, runs `ls` (not pi) via `bash`, reports back. | Worktree management without pi entanglement. | ✅ |
+| 2.4 | Wire pi into the session. First non-command message spawns pi with the same `.pi/` config S1 uses, streams assistant deltas to Telegram. No tools yet. | Pi-in-Telegram bare bones. | ✅ |
+| 2.5 | Tool rendering. Tool calls + results render as compact lines. | The user can watch pi work. | ✅ |
+| 2.6 | Permission prompts via inline buttons. Plan-gate's questions surface as bot messages and your replies route back to pi. | Multi-turn user input fully wired. | ✅ |
+| 2.7 | `request_ship` capture → branch rename → push → `gh pr create --draft`. PR URL posted to chat. | End-to-end loop closed. | ✅ |
+| 2.8 | `/repo` command + `targets/` registry loading. `/cancel` command. | Multi-repo entry point exists; abort works. | ✅ |
+| 2.9 | Real-task validation: tell the bot "add a unit test for `format-money` with a negative input", review the diff, ship. | S2 done. | ⏳ code-complete; smoke test deferred |
 
 Each increment is its own PR on `swe-agent-factory/main`. Each PR is reviewable in isolation, mirroring the S1 sequence.
 
