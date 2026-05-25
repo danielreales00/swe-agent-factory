@@ -30,6 +30,22 @@
 
 ---
 
+## S2.5 — Factory Floor TUI 🚧
+
+**What it is:** A beautiful, captivating, not-overwhelming TUI that becomes the operator's primary surface for the factory. Six workspaces (Floor / Signals / Agents / Review / Targets / Cost), drill-down via a Genealogy lens, a floating intervention tray, time-travel scrubber, surgical policy-driven interventions, editor bridge, macros, and pipeable output. Telegram bridge stays alive in parallel; both consume a new orchestrator daemon over a Unix socket.
+
+**Why before S3:** autonomous cron without observability is a black box. The orchestrator + policy engine S3 needs is the same one S2.5 builds. See `docs/specs/s2.5-tui.md` § 12.
+
+**New pieces needed:**
+- `cmd/orchestrator` daemon (reactive store, event bus, persistent JSONL log, policy engine, outcome poller)
+- `cmd/tui` in Bubble Tea
+- `internal/orchestrator/` extracted from `internal/bridge/`
+- Policy YAML per target (`targets/<name>.policy.yml`)
+
+**What the human does:** lives in the TUI; drills into any session; intervenes precisely; reviews PRs from the Review workspace.
+
+---
+
 ## S3 — Autonomous cron 🔜
 
 **What it is:** The factory scans on a schedule. High-confidence items (clear error, analogous implementation exists) get implemented automatically. Low-confidence items still get a Telegram nudge.
@@ -38,6 +54,9 @@
 - Scheduler entrypoint (cron or ticker)
 - Confidence scoring in the triage step
 - `draft` stage: agent writes a spec before coding (for `capability_gap` type)
+- Real signal sources (axiom/linear/github) populate the Signals workspace stubs from S2.5
+
+**S3.x stretches (specced in `docs/specs/s2.5-tui.md` § 11):** judge sidecar lit up (S3.3), branch & A/B sessions (S3.4), outcome-driven prompt selection (S3.5), critic-coder pair (S3.6), self-improvement loop (S3.7+, gated).
 
 **What the human does:** reviews PRs. Occasionally overrides a triage decision.
 
