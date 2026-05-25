@@ -71,7 +71,7 @@ func (h *Handler) startSession(ctx context.Context, sess *Session, chatID int64)
 	sess.Branch = branch
 
 	piSess.OnEvent = func(e agent.Event) {
-		h.handlePiEvent(chatID, e)
+		h.handlePiEvent(sess, chatID, e)
 	}
 	piSess.OnUI = agent.DenyAllUI
 
@@ -81,16 +81,79 @@ func (h *Handler) startSession(ctx context.Context, sess *Session, chatID int64)
 	return nil
 }
 
-func (h *Handler) handlePiEvent(chatID int64, e agent.Event) {
-	// 2.4 surfaces only assistant message_end. Tool-call rendering arrives
-	// in 2.5; permission prompts in 2.6.
-	text, ok := assistantTextFromEvent(e)
-	if !ok || text == "" {
-		return
+func (h *Handler) handlePiEvent(sess *Session, chatID int64, e agent.Event) {
+	switch e.Type {
+	case "message_end":
+		text, ok := assistantTextFromEvent(e)
+		if !ok || text == "" {
+			return
+		}
+		if _, err := h.Client.Send(chatID, text); err != nil {
+			h.Logger.Printf("send assistant text to chat=%d: %v", chatID, err)
+		}
+
+	case "tool_execution_start":
+		ev, ok := ParseToolStart(e.Raw)
+		if !ok || ev.ToolCallID == "" {
+			return
+		}
+		sess.toolMu.Lock()
+		sess.inFlight[ev.ToolCallID] = ToolStart{Name: ev.ToolName, Args: ev.Args}
+		sess.toolMu.Unlock()
+
+	case "tool_execution_end":
+		ev, ok := ParseToolEnd(e.Raw)
+		if !ok {
+			return
+		}
+		sess.toolMu.Lock()
+		start, hadStart := sess.inFlight[ev.ToolCallID]
+		delete(sess.inFlight, ev.ToolCallID)
+		sess.toolMu.Unlock()
+
+		name := ev.ToolName
+		var args map[string]any
+		if hadStart {
+			if start.Name != "" {
+				name = start.Name
+			}
+			args = start.Args
+		}
+
+		line := RenderToolEnd(name, args, ev.IsError)
+		if _, err := h.Client.Send(chatID, line); err != nil {
+			h.Logger.Printf("send tool line to chat=%d: %v", chatID, err)
+		}
+		if ev.IsError {
+			if body := FormatErrorBody(ev.ToolResultText()); body != "" {
+				if _, err := h.Client.Send(chatID, body); err != nil {
+					h.Logger.Printf("send tool error body to chat=%d: %v", chatID, err)
+				}
+			}
+		}
+
+	case "extension_error":
+		var ee struct {
+			ExtensionPath string `json:"extensionPath"`
+			Event         string `json:"event"`
+			Error         string `json:"error"`
+		}
+		if err := json.Unmarshal(e.Raw, &ee); err != nil {
+			return
+		}
+		h.notify(chatID, fmt.Sprintf("⚠️ extension error in %s (%s): %s",
+			filepathBase(ee.ExtensionPath), ee.Event, ee.Error))
 	}
-	if _, err := h.Client.Send(chatID, text); err != nil {
-		h.Logger.Printf("send assistant text to chat=%d: %v", chatID, err)
+}
+
+// filepathBase returns the last path component without importing path/filepath
+// just for one helper. Splits on / which is fine for the extension paths we
+// see (pi resolves to absolute POSIX-style paths even on Windows).
+func filepathBase(p string) string {
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[i+1:]
 	}
+	return p
 }
 
 func (h *Handler) watchPiExit(sess *Session, chatID int64, piSess *agent.Session) {
@@ -108,6 +171,9 @@ func (h *Handler) watchPiExit(sess *Session, chatID int64, piSess *agent.Session
 	sess.Pi = nil
 	sess.Worktree = ""
 	sess.Branch = ""
+	sess.toolMu.Lock()
+	clear(sess.inFlight)
+	sess.toolMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -125,6 +191,9 @@ func (h *Handler) cleanupPi(ctx context.Context, sess *Session) {
 	sess.Pi = nil
 	sess.Worktree = ""
 	sess.Branch = ""
+	sess.toolMu.Lock()
+	clear(sess.inFlight)
+	sess.toolMu.Unlock()
 	if worktree != "" {
 		if err := h.Worktrees.Remove(ctx, worktree, branch); err != nil {
 			h.Logger.Printf("inline worktree cleanup: %v", err)
